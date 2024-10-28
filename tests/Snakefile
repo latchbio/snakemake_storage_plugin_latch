@@ -1,0 +1,62 @@
+SAMPLES = ["A", "B"]
+
+base = "latch://1721.account/snakemake_data"
+
+
+rule all:
+    input:
+        storage.latch(f"{base}/plots/quals.svg"),
+
+
+rule bwa_map:
+    input:
+        storage.latch(f"{base}/data/samples/{{sample}}.fastq"),
+        storage.latch(f"{base}/genome/genome.fa"),
+        storage.latch(f"{base}/genome/genome.fa.amb"),
+        storage.latch(f"{base}/genome/genome.fa.ann"),
+        storage.latch(f"{base}/genome/genome.fa.bwt"),
+        storage.latch(f"{base}/genome/genome.fa.fai"),
+        storage.latch(f"{base}/genome/genome.fa.pac"),
+        storage.latch(f"{base}/genome/genome.fa.sa"),
+    output:
+        "mapped_reads/{sample}.bam",
+    shell:
+        "mkdir -p mapped_reads && touch mapped_reads/{wildcards.sample}.bam"
+
+
+rule samtools_sort:
+    input:
+        "mapped_reads/{sample}.bam",
+    output:
+        "sorted_reads/{sample}.bam",
+    shell:
+        "mkdir -p sorted_reads && touch sorted_reads/{wildcards.sample}.bam"
+
+
+rule samtools_index:
+    input:
+        "sorted_reads/{sample}.bam",
+    output:
+        "sorted_reads/{sample}.bam.bai",
+    shell:
+        "touch sorted_reads/{wildcards.sample}.bam.bai"
+
+
+rule bcftools_call:
+    input:
+        fa=storage.latch(f"{base}/genome/genome.fa"),
+        bam=expand("sorted_reads/{sample}.bam", sample=SAMPLES),
+        bai=expand("sorted_reads/{sample}.bam.bai", sample=SAMPLES),
+    output:
+        "calls/all.vcf",
+    shell:
+        "mkdir -p calls && touch calls/all.vcf"
+
+
+rule plot_quals:
+    input:
+        "calls/all.vcf",
+    output:
+        storage.latch(f"{base}/plots/quals.svg"),
+    shell:
+        "mkdir -p plots && echo 'abcdefg' > plots/quals.svg && cp plots/quals.svg {output}"
