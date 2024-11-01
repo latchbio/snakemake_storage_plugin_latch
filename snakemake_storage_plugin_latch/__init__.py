@@ -231,13 +231,18 @@ class StorageObject(
             and (res["path"] is None or res["path"] == "")
         )
 
-        size = flt["ldataObjectMeta"]["contentSize"]
-        if size is not None:
-            size = int(size)
+        size = None
+        modify_time = None
 
-        modify_time = flt["ldataObjectMeta"]["modifyTime"]
-        if modify_time is not None:
-            modify_time = dp.isoparse(modify_time)
+        meta = flt["ldataObjectMeta"]
+        if meta is not None:
+            size = meta["contentSize"]
+            if size is not None:
+                size = int(size)
+
+            modify_time = meta["modifyTime"]
+            if modify_time is not None:
+                modify_time = dp.isoparse(modify_time)
 
         return LatchFileAttrs(exists, flt["type"].lower(), size, modify_time)
 
