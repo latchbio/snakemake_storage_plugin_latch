@@ -64,8 +64,6 @@ class LatchPath:
         return cls(parsed.netloc, parsed.path)
 
     def local_suffix(self) -> str:
-        parts = self.domain.split(".")
-
         return f"{self.domain}{self.path}"
 
     def unparse(self) -> str:
@@ -255,6 +253,10 @@ class StorageObject(
 
         self.successfully_stored = False
         pass
+
+    def __truediv__(self, other):
+        new_path = f"latch://{self.path.domain}{os.path.join(self.path.path, other)}"
+        return StorageObject(new_path, self.keep_local, self.retrieve, self.provider)
 
     async def inventory(self, cache: IOCacheStorageInterface):
         """From this file, try to find as much existence and modification date
