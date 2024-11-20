@@ -1,3 +1,4 @@
+import json
 import os
 import time
 from dataclasses import dataclass, field
@@ -33,6 +34,61 @@ from snakemake_interface_storage_plugins.storage_provider import (
 )
 
 
+@cache
+def get_gql_client() -> gql.Client:
+    auth_header: Optional[str] = None
+
+    token = os.environ.get("FLYTE_INTERNAL_EXECUTION_ID", "")
+    if token != "":
+        auth_header = f"Latch-Execution-Token {token}"
+
+    if auth_header is None:
+        token_path = Path.home() / ".latch" / "token"
+        if token_path.exists():
+            auth_header = f"Latch-SDK-Token {token_path.read_text().strip()}"
+
+    if auth_header is None:
+        raise AuthenticationError(
+            "Unable to find credentials to connect to gql server, aborting"
+        )
+
+    url = f"https://vacuole.{os.environ.get('LATCH_SDK_DOMAIN', 'latch.bio')}/graphql"
+
+    return gql.Client(
+        transport=RequestsHTTPTransport(
+            url=url, headers={"Authorization": auth_header}, retries=5, timeout=90
+        )
+    )
+
+
+@cache
+def current_workspace() -> str:
+    client = get_gql_client()
+
+    ws = os.environ.get("LATCH_WORKSPACE")
+    if ws is not None:
+        return ws
+
+    try:
+        s = (Path.home() / ".latch" / "workspace").read_text().strip()
+        ret = json.loads(s)
+        return ret["workspace_id"]
+    except:
+        ...
+
+    res = client.execute(
+        gql.gql("""
+            query DefaultAccountQuery {
+                accountInfoCurrent {
+                    id
+                }
+            }
+        """),
+    )["accountInfoCurrent"]
+
+    return res["id"]
+
+
 # Optional:
 # Define settings for your storage plugin (e.g. host url, credentials).
 # They will occur in the Snakemake CLI as --storage-<storage-plugin-name>-<param-name>
@@ -61,7 +117,11 @@ class LatchPath:
         if parsed.scheme != "latch":
             raise LatchPathValidationException(f"invalid latch path: {path}")
 
-        return cls(parsed.netloc, parsed.path)
+        domain = parsed.netloc
+        if domain == "":
+            domain = f"{current_workspace()}.account"
+
+        return cls(domain, parsed.path)
 
     def local_suffix(self) -> str:
         return f"{self.domain}{self.path}"
@@ -94,31 +154,7 @@ class StorageProvider(StorageProviderBase):
         # Alternatively, you can e.g. prepare a connection to your storage backend here.
         # and set additional attributes.
 
-        auth_header: Optional[str] = None
-
-        token = os.environ.get("FLYTE_INTERNAL_EXECUTION_ID", "")
-        if token != "":
-            auth_header = f"Latch-Execution-Token {token}"
-
-        if auth_header is None:
-            token_path = Path.home() / ".latch" / "token"
-            if token_path.exists():
-                auth_header = f"Latch-SDK-Token {token_path.read_text().strip()}"
-
-        if auth_header is None:
-            raise AuthenticationError(
-                "Unable to find credentials to connect to gql server, aborting"
-            )
-
-        url = (
-            f"https://vacuole.{os.environ.get('LATCH_SDK_DOMAIN', 'latch.bio')}/graphql"
-        )
-
-        self.gql = gql.Client(
-            transport=RequestsHTTPTransport(
-                url=url, headers={"Authorization": auth_header}, retries=5, timeout=90
-            )
-        )
+        self.gql = get_gql_client()
         self.lp = LatchPersistence()
 
     @classmethod
@@ -250,6 +286,7 @@ class StorageObject(
         # and set additional attributes.
         self.provider = cast(StorageProvider, self.provider)
         self.path = LatchPath.parse(self.query)
+        self.query = self.path.unparse()
 
         self.successfully_stored = False
         pass

@@ -1,6 +1,6 @@
 SAMPLES = ["A", "B"]
 
-base = "latch://1721.account/snakemake_data"
+base = "latch:///snakemake_data"
 
 
 rule all:
