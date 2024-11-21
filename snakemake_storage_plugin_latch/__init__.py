@@ -10,8 +10,8 @@ from urllib.parse import urlparse
 
 import dateutil.parser as dp
 import gql
-from flytekit.extras.persistence.latch import LatchPersistence
 from gql.transport.requests import RequestsHTTPTransport
+from latch_persistence import LatchPersistence
 from snakemake_interface_storage_plugins.io import (
     IOCacheStorageInterface,
     Mtime,
@@ -21,9 +21,7 @@ from snakemake_interface_storage_plugins.settings import StorageProviderSettings
 from snakemake_interface_storage_plugins.storage_object import (
     StorageObjectGlob,
     StorageObjectRead,
-    StorageObjectTouch,
     StorageObjectWrite,
-    retry_decorator,
 )
 from snakemake_interface_storage_plugins.storage_provider import (
     ExampleQuery,
@@ -32,61 +30,6 @@ from snakemake_interface_storage_plugins.storage_provider import (
     StorageProviderBase,
     StorageQueryValidationResult,
 )
-
-
-@cache
-def get_gql_client() -> gql.Client:
-    auth_header: Optional[str] = None
-
-    token = os.environ.get("FLYTE_INTERNAL_EXECUTION_ID", "")
-    if token != "":
-        auth_header = f"Latch-Execution-Token {token}"
-
-    if auth_header is None:
-        token_path = Path.home() / ".latch" / "token"
-        if token_path.exists():
-            auth_header = f"Latch-SDK-Token {token_path.read_text().strip()}"
-
-    if auth_header is None:
-        raise AuthenticationError(
-            "Unable to find credentials to connect to gql server, aborting"
-        )
-
-    url = f"https://vacuole.{os.environ.get('LATCH_SDK_DOMAIN', 'latch.bio')}/graphql"
-
-    return gql.Client(
-        transport=RequestsHTTPTransport(
-            url=url, headers={"Authorization": auth_header}, retries=5, timeout=90
-        )
-    )
-
-
-@cache
-def current_workspace() -> str:
-    client = get_gql_client()
-
-    ws = os.environ.get("LATCH_WORKSPACE")
-    if ws is not None:
-        return ws
-
-    try:
-        s = (Path.home() / ".latch" / "workspace").read_text().strip()
-        ret = json.loads(s)
-        return ret["workspace_id"]
-    except:
-        ...
-
-    res = client.execute(
-        gql.gql("""
-            query DefaultAccountQuery {
-                accountInfoCurrent {
-                    id
-                }
-            }
-        """),
-    )["accountInfoCurrent"]
-
-    return res["id"]
 
 
 # Optional:
@@ -117,13 +60,12 @@ class LatchPath:
         if parsed.scheme != "latch":
             raise LatchPathValidationException(f"invalid latch path: {path}")
 
-        domain = parsed.netloc
-        if domain == "":
-            domain = f"{current_workspace()}.account"
-
-        return cls(domain, parsed.path)
+        return cls(parsed.netloc, parsed.path)
 
     def local_suffix(self) -> str:
+        if self.domain == "":
+            return f"inferred{self.path}"
+
         return f"{self.domain}{self.path}"
 
     def unparse(self) -> str:
@@ -153,8 +95,31 @@ class StorageProvider(StorageProviderBase):
         # This is optional and can be removed if not needed.
         # Alternatively, you can e.g. prepare a connection to your storage backend here.
         # and set additional attributes.
+        auth_header: Optional[str] = None
 
-        self.gql = get_gql_client()
+        token = os.environ.get("FLYTE_INTERNAL_EXECUTION_ID", "")
+        if token != "":
+            auth_header = f"Latch-Execution-Token {token}"
+
+        if auth_header is None:
+            token_path = Path.home() / ".latch" / "token"
+            if token_path.exists():
+                auth_header = f"Latch-SDK-Token {token_path.read_text().strip()}"
+
+        if auth_header is None:
+            raise AuthenticationError(
+                "Unable to find credentials to connect to gql server, aborting"
+            )
+
+        url = (
+            f"https://vacuole.{os.environ.get('LATCH_SDK_DOMAIN', 'latch.bio')}/graphql"
+        )
+
+        self.gql = gql.Client(
+            transport=RequestsHTTPTransport(
+                url=url, headers={"Authorization": auth_header}, retries=5, timeout=90
+            )
+        )
         self.lp = LatchPersistence()
 
     @classmethod
@@ -286,10 +251,8 @@ class StorageObject(
         # and set additional attributes.
         self.provider = cast(StorageProvider, self.provider)
         self.path = LatchPath.parse(self.query)
-        self.query = self.path.unparse()
 
         self.successfully_stored = False
-        pass
 
     def __truediv__(self, other):
         new_path = f"latch://{self.path.domain}{os.path.join(self.path.path, other)}"
