@@ -51,11 +51,11 @@ expr = re.compile(r"^/ldata")
 
 
 # idempotent
-def get_remote_path(path: str) -> str:
+def to_latch_url(path: str) -> str:
     return expr.sub("latch:/", path)
 
 
-def is_remote(path: str) -> bool:
+def is_ldata_path(path: str) -> bool:
     return get_root(Path(path).resolve()) == "ldata"
 
 
@@ -66,11 +66,11 @@ class LatchPath:
 
     @classmethod
     def parse(cls, path: str):
-        path = get_remote_path(path)
-        parsed = urlparse(path)
+        url = to_latch_url(path)
+        parsed = urlparse(url)
 
         if parsed.scheme != "latch":
-            raise LatchPathValidationException(f"invalid latch path: {path}")
+            raise LatchPathValidationException(f"invalid latch path: {url}")
 
         return cls(parsed.netloc, parsed.path)
 
@@ -133,8 +133,10 @@ class StorageProvider(StorageProviderBase):
         E.g. for a storage provider like http that would be the host name.
         For s3 it might be just the endpoint URL.
         """
-
-        return LatchPath.parse(query).domain
+        try:
+            return LatchPath.parse(query).domain
+        except LatchPathValidationException:
+            return "local"
 
     def default_max_requests_per_second(self) -> float:
         """Return the default maximum number of requests per second for this storage
@@ -154,7 +156,7 @@ class StorageProvider(StorageProviderBase):
         valid: bool = True
         reason: Optional[str] = None
 
-        if is_remote(query):
+        if is_ldata_path(query):
             try:
                 LatchPath.parse(query)
             except LatchPathValidationException as e:
@@ -173,6 +175,17 @@ class LatchFileAttrs:
 
 
 class StorageObject(StorageObjectRead, StorageObjectWrite, StorageObjectGlob):
+    def __post_init__(self):
+        self.provider = cast(StorageProvider, self.provider)
+        self.is_remote = is_ldata_path(self.query)
+
+        if self.is_remote:
+            self.path = LatchPath.parse(self.query)
+        else:
+            self.path = Path(self.query)
+
+        self.successfully_stored = False
+
     def _get_file_attrs(self) -> LatchFileAttrs:
         if not self.is_remote:
             if not self.path.exists():
@@ -237,17 +250,6 @@ class StorageObject(StorageObjectRead, StorageObjectWrite, StorageObjectGlob):
                 modify_time = dp.isoparse(modify_time).timestamp()
 
         return LatchFileAttrs(exists, flt["type"].lower(), size, modify_time)
-
-    def __post_init__(self):
-        self.provider = cast(StorageProvider, self.provider)
-        self.is_remote = is_remote(self.query)
-
-        if self.is_remote:
-            self.path = LatchPath.parse(self.query)
-        else:
-            self.path = Path(self.query)
-
-        self.successfully_stored = False
 
     async def inventory(self, cache: IOCacheStorageInterface):
         """From this file, try to find as much existence and modification date
@@ -342,7 +344,7 @@ class StorageObject(StorageObjectRead, StorageObjectWrite, StorageObjectGlob):
         prefix = get_constant_prefix(str(self.path))
 
         if not self.is_remote:
-            for res in Path([prefix]).glob("*"):
+            for res in Path(prefix).glob("*"):
                 yield str(res)
 
             return
@@ -360,7 +362,7 @@ class StorageObject(StorageObjectRead, StorageObjectWrite, StorageObjectGlob):
                 }
                 """,
             ),
-            {"argPath": [prefix]},
+            {"argPath": prefix},
         )["ldataGetDescendants"]
 
         if res is None:
