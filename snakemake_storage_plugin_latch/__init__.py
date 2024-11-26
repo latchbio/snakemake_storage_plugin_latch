@@ -1,7 +1,8 @@
 import os
+import re
+import traceback
 from dataclasses import dataclass
-from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PosixPath
 from typing import Any, Iterable, List, Optional, cast
 from urllib.parse import urlparse
 
@@ -39,6 +40,25 @@ class LatchPathValidationException(ValueError): ...
 class AuthenticationError(RuntimeError): ...
 
 
+def get_root(p: Path) -> str:
+    if p == Path("/") or p.match("/*"):
+        return p.name
+
+    return get_root(p.parent)
+
+
+expr = re.compile(r"^/ldata")
+
+
+# idempotent
+def get_remote_path(path: str) -> str:
+    return expr.sub("latch:/", path)
+
+
+def is_remote(path: str) -> bool:
+    return get_root(Path(path).resolve()) == "ldata"
+
+
 @dataclass
 class LatchPath:
     domain: str
@@ -46,7 +66,9 @@ class LatchPath:
 
     @classmethod
     def parse(cls, path: str):
+        path = get_remote_path(path)
         parsed = urlparse(path)
+
         if parsed.scheme != "latch":
             raise LatchPathValidationException(f"invalid latch path: {path}")
 
@@ -129,15 +151,15 @@ class StorageProvider(StorageProviderBase):
     def is_valid_query(cls, query: str) -> StorageQueryValidationResult:
         """Return whether the given query is valid for this storage provider."""
 
-        valid: bool
-        reason: Optional[str]
-        try:
-            LatchPath.parse(query)
-            valid = True
-            reason = None
-        except LatchPathValidationException as e:
-            valid = False
-            reason = str(e)
+        valid: bool = True
+        reason: Optional[str] = None
+
+        if is_remote(query):
+            try:
+                LatchPath.parse(query)
+            except LatchPathValidationException as e:
+                valid = False
+                reason = str(e)
 
         return StorageQueryValidationResult(query, valid, reason)
 
@@ -145,13 +167,21 @@ class StorageProvider(StorageProviderBase):
 @dataclass
 class LatchFileAttrs:
     exists: bool
-    type: str
+    type: Optional[str]
     size: Optional[int]
-    modify_time: Optional[datetime]
+    modify_time: Optional[float]
 
 
 class StorageObject(StorageObjectRead, StorageObjectWrite, StorageObjectGlob):
     def _get_file_attrs(self) -> LatchFileAttrs:
+        if not self.is_remote:
+            if not self.path.exists():
+                return LatchFileAttrs(False, None, None, None)
+
+            typ = "obj" if self.path.is_file() else "dir"
+            stat = self.path.stat()
+            return LatchFileAttrs(True, typ, stat.st_size, stat.st_mtime)
+
         res = self.provider.gql.execute(
             gql.gql(
                 """
@@ -190,6 +220,9 @@ class StorageObject(StorageObjectRead, StorageObjectWrite, StorageObjectGlob):
             and (res["path"] is None or res["path"] == "")
         )
 
+        if not exists:
+            return LatchFileAttrs(False, None, None, None)
+
         size = None
         modify_time = None
 
@@ -201,19 +234,20 @@ class StorageObject(StorageObjectRead, StorageObjectWrite, StorageObjectGlob):
 
             modify_time = meta["modifyTime"]
             if modify_time is not None:
-                modify_time = dp.isoparse(modify_time)
+                modify_time = dp.isoparse(modify_time).timestamp()
 
         return LatchFileAttrs(exists, flt["type"].lower(), size, modify_time)
 
     def __post_init__(self):
         self.provider = cast(StorageProvider, self.provider)
-        self.path = LatchPath.parse(self.query)
+        self.is_remote = is_remote(self.query)
+
+        if self.is_remote:
+            self.path = LatchPath.parse(self.query)
+        else:
+            self.path = Path(self.query)
 
         self.successfully_stored = False
-
-    def __truediv__(self, other):
-        new_path = f"latch://{self.path.domain}{os.path.join(self.path.path, other)}"
-        return StorageObject(new_path, self.keep_local, self.retrieve, self.provider)
 
     async def inventory(self, cache: IOCacheStorageInterface):
         """From this file, try to find as much existence and modification date
@@ -229,7 +263,7 @@ class StorageObject(StorageObjectRead, StorageObjectWrite, StorageObjectGlob):
             cache.size[self.cache_key()] = attrs.size
 
         if attrs.modify_time is not None:
-            cache.mtime[self.cache_key()] = Mtime(storage=attrs.modify_time.timestamp())
+            cache.mtime[self.cache_key()] = Mtime(storage=attrs.modify_time)
 
     def get_inventory_parent(self) -> Optional[str]:
         """Return the parent directory of this object."""
@@ -238,8 +272,10 @@ class StorageObject(StorageObjectRead, StorageObjectWrite, StorageObjectGlob):
 
     def local_suffix(self) -> str:
         """Return a unique suffix for the local path, determined from self.query."""
+        if self.is_remote:
+            return self.path.local_suffix()
 
-        return self.path.local_suffix()
+        return self.path.resolve()
 
     def cleanup(self):
         """Perform local cleanup of any remainders of the storage object."""
@@ -254,7 +290,7 @@ class StorageObject(StorageObjectRead, StorageObjectWrite, StorageObjectGlob):
     def mtime(self) -> float:
         mtime = self._get_file_attrs().modify_time
         if mtime is not None:
-            return mtime.timestamp()
+            return mtime
 
         return 0
 
@@ -266,28 +302,32 @@ class StorageObject(StorageObjectRead, StorageObjectWrite, StorageObjectGlob):
         return 0
 
     def retrieve_object(self):
-        local = self.local_path().resolve()
-        if self._get_file_attrs().type != "obj":
-            self.provider.lp.download_directory(self.query, str(local))
+        if not self.is_remote:
             return
 
-        self.provider.lp.download(self.query, str(local))
+        local = self.local_path().resolve()
+        if self._get_file_attrs().type != "obj":
+            self.provider.lp.download_directory(str(self.path), str(local))
+            return
+
+        self.provider.lp.download(str(self.path), str(local))
 
     def store_object(self):
         self._store_object()
         self.successfully_stored = True
 
     def _store_object(self):
-        local = self.local_path().resolve()
-        if local.is_dir():
-            self.provider.lp.upload_directory(str(local), self.query)
+        if not self.is_remote:
             return
 
-        self.provider.lp.upload(str(local), self.query)
+        local = self.local_path().resolve()
+        if local.is_dir():
+            self.provider.lp.upload_directory(str(local), str(self.path))
+            return
+
+        self.provider.lp.upload(str(local), str(self.path))
 
     def remove(self):
-        # Remove the object from the storage.
-
         # todo(ayush): not implementing for now bc idk how i feel about letting snakemake kill things
         ...
 
@@ -298,6 +338,15 @@ class StorageObject(StorageObjectRead, StorageObjectWrite, StorageObjectGlob):
         # The method has to return concretized queries without any remaining wildcards.
         # Use snakemake_executor_plugins.io.get_constant_prefix(self.query) to get the
         # prefix of the query before the first wildcard.
+
+        prefix = get_constant_prefix(str(self.path))
+
+        if not self.is_remote:
+            for res in Path([prefix]).glob("*"):
+                yield str(res)
+
+            return
+
         res = self.provider.gql.execute(
             gql.gql(
                 """
@@ -311,7 +360,7 @@ class StorageObject(StorageObjectRead, StorageObjectWrite, StorageObjectGlob):
                 }
                 """,
             ),
-            {"argPath": get_constant_prefix(self.query)},
+            {"argPath": [prefix]},
         )["ldataGetDescendants"]
 
         if res is None:

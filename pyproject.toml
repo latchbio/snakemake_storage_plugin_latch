@@ -6,7 +6,7 @@ authors = ["Ayush Kamat <ayush@latch.bio>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = ">=3.9"
+python = ">=3.11,<4.0"
 snakemake-interface-storage-plugins = "^3.3.0"
 latch-persistence = "^0.1.0"
 gql = "^3.5.0"

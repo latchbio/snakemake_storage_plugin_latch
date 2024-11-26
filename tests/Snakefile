@@ -1,23 +1,23 @@
 SAMPLES = ["A", "B"]
 
-base = "latch:///snakemake_data"
+base = "/ldata/1721.account/snakemake_data"
 
 
 rule all:
     input:
-        storage.latch(f"{base}/plots/quals.svg"),
+        f"{base}/plots/quals.svg",
 
 
 rule bwa_map:
     input:
-        storage.latch(f"{base}/data/samples/{{sample}}.fastq"),
-        storage.latch(f"{base}/genome/genome.fa"),
-        storage.latch(f"{base}/genome/genome.fa.amb"),
-        storage.latch(f"{base}/genome/genome.fa.ann"),
-        storage.latch(f"{base}/genome/genome.fa.bwt"),
-        storage.latch(f"{base}/genome/genome.fa.fai"),
-        storage.latch(f"{base}/genome/genome.fa.pac"),
-        storage.latch(f"{base}/genome/genome.fa.sa"),
+        f"{base}/data/samples/{{sample}}.fastq",
+        f"{base}/genome/genome.fa",
+        f"{base}/genome/genome.fa.amb",
+        f"{base}/genome/genome.fa.ann",
+        f"{base}/genome/genome.fa.bwt",
+        f"{base}/genome/genome.fa.fai",
+        f"{base}/genome/genome.fa.pac",
+        f"{base}/genome/genome.fa.sa",
     output:
         "mapped_reads/{sample}.bam",
     shell:
@@ -44,7 +44,7 @@ rule samtools_index:
 
 rule bcftools_call:
     input:
-        fa=storage.latch(f"{base}/genome/genome.fa"),
+        fa=f"{base}/genome/genome.fa",
         bam=expand("sorted_reads/{sample}.bam", sample=SAMPLES),
         bai=expand("sorted_reads/{sample}.bam.bai", sample=SAMPLES),
     output:
@@ -57,6 +57,6 @@ rule plot_quals:
     input:
         "calls/all.vcf",
     output:
-        storage.latch(f"{base}/plots/quals.svg"),
+        f"{base}/plots/quals.svg",
     shell:
         "mkdir -p plots && echo 'abcdefg' > plots/quals.svg && cp plots/quals.svg {output}"
