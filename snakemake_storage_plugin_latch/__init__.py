@@ -1,8 +1,7 @@
 import os
 import re
-import traceback
 from dataclasses import dataclass
-from pathlib import Path, PosixPath
+from pathlib import Path
 from typing import Any, Iterable, List, Optional, cast
 from urllib.parse import urlparse
 
@@ -277,7 +276,7 @@ class StorageObject(StorageObjectRead, StorageObjectWrite, StorageObjectGlob):
         if self.is_remote:
             return self.path.local_suffix()
 
-        return self.path.resolve()
+        return str(self.path.resolve())
 
     def cleanup(self):
         """Perform local cleanup of any remainders of the storage object."""
