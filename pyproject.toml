@@ -1,12 +1,12 @@
 [tool.poetry]
 name = "snakemake-storage-plugin-latch"
-version = "0.1.9"
+version = "0.1.10"
 description = ""
 authors = ["Ayush Kamat <ayush@latch.bio>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = ">=3.11,<4.0"
+python = ">=3.11"
 snakemake-interface-storage-plugins = "^3.3.0"
 latch-persistence = "0.1.1"
 gql = "^3.5.0"

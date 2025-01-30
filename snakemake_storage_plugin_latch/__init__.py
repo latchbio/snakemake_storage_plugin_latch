@@ -2,7 +2,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, List, Optional, cast
+from typing import Any, Callable, Iterable, List, Optional, ParamSpec, TypeVar, cast
 from urllib.parse import urlparse
 
 import dateutil.parser as dp
@@ -27,6 +27,27 @@ from snakemake_interface_storage_plugins.storage_provider import (
     StorageProviderBase,
     StorageQueryValidationResult,
 )
+
+P = ParamSpec("P")
+T = TypeVar("T")
+
+
+def with_retry(max_retries: int = 3):
+    def decorator(f: Callable[P, T]) -> Callable[P, T]:
+        def decorated(*args: P.args, **kwargs: P.kwargs) -> T:
+            retries = 0
+            while True:
+                try:
+                    return f(*args, **kwargs)
+                except Exception as e:
+                    retries += 1
+
+                    if retries >= max_retries:
+                        raise e
+
+        return decorated
+
+    return decorator
 
 
 @dataclass
@@ -185,6 +206,7 @@ class StorageObject(StorageObjectRead, StorageObjectWrite, StorageObjectGlob):
 
         self.successfully_stored = False
 
+    @with_retry()
     def _get_file_attrs(self) -> LatchFileAttrs:
         if not self.is_remote:
             if not self.path.exists():
@@ -302,6 +324,7 @@ class StorageObject(StorageObjectRead, StorageObjectWrite, StorageObjectGlob):
 
         return 0
 
+    @with_retry()
     def retrieve_object(self):
         if not self.is_remote:
             return
@@ -317,6 +340,7 @@ class StorageObject(StorageObjectRead, StorageObjectWrite, StorageObjectGlob):
         self._store_object()
         self.successfully_stored = True
 
+    @with_retry()
     def _store_object(self):
         if not self.is_remote:
             return
